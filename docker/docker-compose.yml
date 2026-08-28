@@ -3,7 +3,7 @@
 # Services are added incrementally: Redpanda -> ClickHouse -> Prometheus ->
 # Grafana -> ingestion -> processor. Each is verified working before the
 # next is added, so failures are easy to isolate to one service.
-
+name: transaction-pipeline
 services:
   # --- Redpanda: our Kafka-compatible message broker ---
   redpanda:
