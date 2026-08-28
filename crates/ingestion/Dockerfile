@@ -7,28 +7,33 @@
 # to resolve dependencies consistently, even though we're only compiling
 # the ingestion binary out of it.
 
-# ARGs declared before the first FROM are available to every FROM in
-# this file. Defaults point at the official public images, so a plain
-# `docker build` (no extra flags) works on any machine out of the box -
-# Windows, a fresh Linux box, GitHub Actions, wherever. Overriding these
-# (via docker-compose's build.args, see docker-compose.yml) is only
-# needed on networks like this VM's corporate one that block plain HTTP
-# apt access.
-ARG RUST_BASE_IMAGE=rust:1.97-slim-bookworm
-ARG RUNTIME_BASE_IMAGE=debian:bookworm-slim
+# # ARGs declared before the first FROM are available to every FROM in
+# # this file. Defaults point at the official public images, so a plain
+# # `docker build` (no extra flags) works on any machine out of the box -
+# # Windows, a fresh Linux box, GitHub Actions, wherever. Overriding these
+# # (via docker-compose's build.args, see docker-compose.yml) is only
+# # needed on networks like this VM's corporate one that block plain HTTP
+# # apt access.
+# ARG RUST_BASE_IMAGE=rust:1.97-slim-bookworm
+# ARG RUNTIME_BASE_IMAGE=debian:bookworm-slim
 
 # ---------- Stage 1: builder ----------
 # rust:1.82-slim has the full toolchain (rustc, cargo) on a slimmed-down
 # Debian base - much smaller than the default rust:1.82 image, but still
 # has apt available for the system libs rdkafka needs below.
-FROM ${RUST_BASE_IMAGE} AS builder
+FROM rust:1.97-slim-bookworm AS builder
 
 # Native build dependencies for rdkafka, which compiles the C library
 # librdkafka from source: cmake drives that build, build-essential gives
 # us a C/C++ compiler, and the *-dev packages provide the header files
 # and link libraries librdkafka builds against.
 
-RUN apt-get update && apt-get install -y \
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list; \
+    apt-get update -o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Host=false && \
+    apt-get install -y --no-install-recommends -o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Host=false ca-certificates && \
+    apt-get update && \
+    apt-get install -y \
     build-essential \
     cmake \
     pkg-config \
@@ -83,18 +88,22 @@ RUN touch crates/ingestion/src/main.rs crates/common/src/lib.rs && \
 # no source code - just enough OS to run the compiled binary. This is
 # the image that actually ships; the builder stage above is discarded
 # entirely once the final image is built.
-FROM ${RUNTIME_BASE_IMAGE}
+FROM debian:bookworm-slim
 
 # Runtime (non-dev) versions of the libraries rdkafka linked against at
 # compile time. ca-certificates is needed for any outbound TLS
 # connections (not currently used here, but cheap to include and saves
 # a confusing failure later if you add one).
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list; \
+    apt-get update -o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Host=false && \
+    apt-get install -y --no-install-recommends -o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Host=false ca-certificates && \
+    apt-get update && \
+    apt-get install -y \
     libssl3 \
     zlib1g \
     libzstd1 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/
 
 WORKDIR /app
 
