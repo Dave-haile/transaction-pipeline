@@ -1,11 +1,3 @@
-[package]
-name = "transaction-pipeline"
-version = "0.1.0"
-edition = "2024"
-
 [workspace]
 members = ["crates/ingestion", "crates/processor", "crates/common"]
 resolver = "2"
-
-[dependencies]
-dotenvy = "0.15"

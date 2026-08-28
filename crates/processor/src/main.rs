@@ -54,38 +54,37 @@ struct TransactionRow {
 async fn main() {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
-    
+
     let prometheus_handle = common::metrics::install_recorder();
 
-    
     tokio::spawn(async move {
         let app = common::metrics::metrics_router(prometheus_handle);
         let listener = tokio::net::TcpListener::bind("0.0.0.0:9091")
-        .await
-        .expect("failed to bind metrics port 9091");
-    axum::serve(listener, app)
-    .await
-    .expect("metrics server crashed");
+            .await
+            .expect("failed to bind metrics port 9091");
+        axum::serve(listener, app)
+            .await
+            .expect("metrics server crashed");
     });
     let kafka_brokers = std::env::var("KAFKA_BOOTSTRAP_SERVERS")
     .expect("KAFKA_BOOTSTRAP_SERVERS must be set — check .env for local runs, or docker-compose environment: for containers");
     let tracker = VelocityTracker::new();
     // --- consumer setup ---
     let consumer: StreamConsumer = ClientConfig::new()
-    .set("bootstrap.servers", &kafka_brokers)
-    // group.id identifies this consumer as part of a "consumer
-    // group". Kafka tracks read progress (offsets) PER GROUP, so if
-    // we ever run multiple processor instances with the SAME
-            // group.id, Kafka automatically splits the topic's partitions
-            // between them instead of both reading everything.
-            .set("group.id", "processor-group")
-            // "earliest" = if this group has never consumed before, start
-            // from the beginning of the topic instead of only new messages.
-            // Useful while developing, since we can re-run the processor
-            // and reprocess transactions we already sent via curl.
-            .set("auto.offset.reset", "earliest")
-            .create()
-            .expect("failed to create Kafka consumer");
+        .set("bootstrap.servers", &kafka_brokers)
+        // group.id identifies this consumer as part of a "consumer
+        // group". Kafka tracks read progress (offsets) PER GROUP, so if
+        // we ever run multiple processor instances with the SAME
+        // group.id, Kafka automatically splits the topic's partitions
+        // between them instead of both reading everything.
+        .set("group.id", "processor-group")
+        // "earliest" = if this group has never consumed before, start
+        // from the beginning of the topic instead of only new messages.
+        // Useful while developing, since we can re-run the processor
+        // and reprocess transactions we already sent via curl.
+        .set("auto.offset.reset", "earliest")
+        .create()
+        .expect("failed to create Kafka consumer");
 
     // Tell the consumer which topic(s) to read from. It's a slice
     // (&[...]) because you can subscribe to multiple topics at once —
@@ -105,8 +104,11 @@ async fn main() {
     // pattern as ClientConfig for Kafka above. Note this talks to
     // ClickHouse over HTTP (port 8123), not the native 9000 port —
     // that's what clickhouse-client (the CLI) uses, not this crate.
+    let clickhouse_url = std::env::var("CLICKHOUSE_URL")
+        .expect("CLICKHOUSE_URL must be set — check .env for local runs, or docker-compose environment: for containers");
+
     let ch_client = clickhouse::Client::default()
-        .with_url("http://localhost:8123")
+        .with_url(&clickhouse_url)
         .with_database("transaction_pipeline")
         // Force synchronous inserts. Some ClickHouse server versions default
         // to async_insert = 1, which buffers writes server-side and responds
@@ -215,8 +217,8 @@ async fn handle_message(
 
     if !is_flagged {
         metrics::counter!("transactions_processed_total", "flagged" => "false").increment(1); // ADD
-    tracing::info!("transaction {} clean", transaction.id);
-    return;
+        tracing::info!("transaction {} clean", transaction.id);
+        return;
     }
     metrics::counter!("transactions_processed_total", "flagged" => "true").increment(1); // ADD
     tracing::warn!("transaction {} flagged: {:?}", transaction.id, reasons);
