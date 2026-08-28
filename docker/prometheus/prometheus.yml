@@ -1,0 +1,16 @@
+# prometheus/prometheus.yml
+# Same scrape config as the native install, with 'localhost' swapped for
+# 'host.docker.internal' - the DNS name we're adding via extra_hosts in
+# compose so this container can reach ingestion/processor still running
+# natively on the VM. Once those two are containerized (next steps),
+# we'll swap these targets again to use their Docker service names
+# instead, and can drop the extra_hosts entry entirely.
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: 'ingestion'
+    static_configs:
+      - targets: ['ingestion:3001'] 
+  - job_name: 'processor'
+    static_configs:
+      - targets: ['processor:9091'] 

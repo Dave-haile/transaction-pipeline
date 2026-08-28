@@ -1,0 +1,209 @@
+# docker-compose.yml — orchestrates the transaction monitoring pipeline
+#
+# Services are added incrementally: Redpanda -> ClickHouse -> Prometheus ->
+# Grafana -> ingestion -> processor. Each is verified working before the
+# next is added, so failures are easy to isolate to one service.
+
+services:
+  # --- Redpanda: our Kafka-compatible message broker ---
+  redpanda:
+    # Official Redpanda image. No custom Dockerfile needed — we only
+    # configure it via command flags and volumes below.
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    container_name: redpanda
+
+    # 'command' overrides the container's default startup args. Redpanda
+    # needs to be told explicitly how it's reachable, both from inside the
+    # Docker network (other containers) and from outside it (your Rust
+    # binaries running natively on the VM during this transition, plus
+    # any tools on your Windows host).
+    command:
+      - redpanda
+      - start
+      - --smp=1                       # limits Redpanda to 1 CPU core - fine for a dev/portfolio setup, keeps resource use predictable
+      - --memory=1G                   # caps memory use so it doesn't crowd out ClickHouse/Grafana on the same VM
+      - --reserve-memory=0M           # don't reserve extra memory beyond the --memory cap
+      - --overprovisioned             # tells Redpanda it's running in a constrained/dev environment, not bare-metal production
+      - --node-id=0
+      - --check=false                 # skips Redpanda's strict hardware/kernel checks, which are meant for production bare-metal, not a VM
+      # Kafka API: how clients connect. We advertise two listeners -
+      # one for other containers (using the Docker service name 'redpanda'),
+      # one for the host/native processes (using the VM's own address).
+      - --kafka-addr=internal://0.0.0.0:9092
+      - --advertise-kafka-addr=internal://redpanda:9092
+      - --pandaproxy-addr=internal://0.0.0.0:8082
+      - --advertise-pandaproxy-addr=internal://redpanda:8082
+
+    ports:
+      # Left side = port on the VM host, right side = port inside the container.
+      # We expose the 'external' listener ports so anything still running
+      # natively on the VM (or tools on your Windows host) can reach Redpanda.
+      - "9644:9644"     # Redpanda admin API - useful for health checks
+
+    volumes:
+      # Named volume so topic data survives container restarts. Without
+      # this, every 'docker compose down' would wipe your Kafka topics.
+      - redpanda-data:/var/lib/redpanda/data
+
+    networks:
+      - pipeline-net
+  # --- ClickHouse: columnar store for all transactions (flagged + clean) ---
+  clickhouse:
+    # Pinned to match your native server's version exactly. Bug #2 from
+    # your native setup (LZ4 compression corrupting inserts) was tied to
+    # this specific version's behavior with the `clickhouse` Rust crate -
+    # pulling a different version here could reintroduce it.
+    image: clickhouse/clickhouse-server:26.7.1
+    container_name: clickhouse
+
+    ports:
+      # 8123 = HTTP interface, which is what the Rust `clickhouse` crate
+      # uses. Exposed to the host so your still-native `processor` can
+      # keep reaching it during the transition, same reasoning as
+      # Redpanda's external listener.
+      - "8123:8123"
+      # 9000 = ClickHouse's native TCP protocol, used by the `clickhouse-client`
+      # CLI tool if you want to connect interactively for debugging.
+      - "9000:9000"
+
+    volumes:
+      # Table data persists across container restarts.
+      - clickhouse-data:/var/lib/clickhouse
+      # Mounts our async_insert override into the exact directory ClickHouse
+      # scans on startup for user-profile overrides. Read-only (:ro) since
+      # the container has no business writing back to it.
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d
+
+    networks:
+      - pipeline-net
+
+    # Docker's built-in healthcheck: lets 'docker compose ps' and future
+    # 'depends_on: condition: service_healthy' rules (we'll use these once
+    # ingestion/processor are containerized) know when ClickHouse is
+    # actually ready to accept queries, not just "process started".
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  # --- Prometheus: scrapes /metrics from ingestion and processor ---
+  prometheus:
+    image: prom/prometheus:v2.53.2
+    container_name: prometheus
+
+    # Makes 'host.docker.internal' resolve to the VM's own IP from inside
+    # this container. 'host-gateway' is a special value Docker recognizes -
+    # it doesn't need us to hardcode the VM's actual address.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      # Mounts our scrape config to the exact path Prometheus reads on
+      # startup by default.
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Named volume for the TSDB (time-series database) so scraped
+      # metrics history survives container restarts.
+      - prometheus-data:/prometheus
+
+    ports:
+      - "9090:9090"   # Prometheus web UI + API
+
+    networks:
+      - pipeline-net
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  # --- Grafana: dashboards over Prometheus metrics + ClickHouse queries ---
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+
+    environment:
+      # Matches your native admin/admin login so nothing changes for you.
+      # Worth eventually changing for anything beyond a personal dev box.
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # ClickHouse isn't a built-in Grafana datasource type - this installs
+      # the plugin automatically on container startup, same as you must
+      # have done manually on the native install.
+      - GF_INSTALL_PLUGINS=grafana-clickhouse-datasource
+
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # Named volume for Grafana's own internal state (sessions, any
+      # UI-made tweaks allowUiUpdates permits) - separate from the
+      # provisioning files, which are read-only source-of-truth.
+      - grafana-data:/var/lib/grafana
+
+    ports:
+      - "3000:3000"
+
+    networks:
+      - pipeline-net
+
+    depends_on:
+      - prometheus
+      - clickhouse
+    # --- ingestion: receives transactions via HTTP, publishes to Kafka ---
+  ingestion:
+    build:
+      context: ..                          # workspace root - same reasoning as the manual docker build: Cargo needs the whole workspace visible
+      dockerfile: crates/ingestion/Dockerfile
+      args:
+        RUST_BASE_IMAGE: ${RUST_BASE_IMAGE:-rust:1.97-slim-bookworm}
+        RUNTIME_BASE_IMAGE: ${RUNTIME_BASE_IMAGE:-debian:bookworm-slim}
+    container_name: ingestion
+
+    environment:
+      # Internal listener now, not the external one - ingestion is a
+      # container on pipeline-net now, so it reaches Redpanda
+      # container-to-container instead of bridging in from the host.
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
+
+    ports:
+      - "3001:3001"
+
+    networks:
+      - pipeline-net
+
+    depends_on:
+      - redpanda
+    # --- processor: consumes transactions, runs fraud rules, writes to ClickHouse ---
+  processor:
+    build:
+      context: ..
+      dockerfile: crates/processor/Dockerfile
+      args:
+        RUST_BASE_IMAGE: ${RUST_BASE_IMAGE:-rust:1.97-slim-bookworm}
+        RUNTIME_BASE_IMAGE: ${RUNTIME_BASE_IMAGE:-debian:bookworm-slim}
+    container_name: processor
+
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
+      - CLICKHOUSE_URL=http://clickhouse:8123    # container-to-container now, not localhost
+
+    networks:
+      - pipeline-net
+
+    depends_on:
+      - redpanda
+      - clickhouse
+
+# --- Named volumes: Docker manages these, they persist independently
+# of the containers that use them ---
+volumes:
+  redpanda-data:
+  clickhouse-data:
+  prometheus-data:
+  grafana-data:
+  ingestion:
+
+# --- Shared network so containers can reach each other by service name
+# (e.g. 'redpanda:9092') instead of an IP address ---
+networks:
+  pipeline-net:
+    driver: bridge

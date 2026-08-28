@@ -1,0 +1,13 @@
+# grafana/provisioning/dashboards/dashboards.yml
+apiVersion: 1
+
+providers:
+  - name: 'default'
+    orgId: 1
+    folder: ''                 # '' = load into Grafana's root folder, matching where they live now
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30  # re-scans this folder every 30s for changes
+    allowUiUpdates: true       # lets you keep editing dashboards through the UI, same workflow as before
+    options:
+      path: /var/lib/grafana/dashboards   # path *inside the container* - we'll mount your exported JSON here

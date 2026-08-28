@@ -1,0 +1,30 @@
+# grafana/provisioning/datasources/datasources.yml
+# Recreates both datasources exactly, including their original UIDs.
+# Keeping the same UIDs matters: your exported dashboard JSON (next step)
+# references panels' datasources BY UID, not by name - if these UIDs
+# didn't match, every panel in both dashboards would show "datasource
+# not found" on first load.
+apiVersion: 1
+
+datasources:
+  - name: grafana-clickhouse-datasource
+    type: grafana-clickhouse-datasource
+    uid: ffuqlweo4mjggc      # matches native install exactly
+    access: proxy
+    jsonData:
+      host: clickhouse        # was 'localhost' - now the Docker service name
+      port: 9000
+      protocol: native
+      secure: false
+      username: default
+    # secureJsonData holds the ClickHouse password. See note below -
+    # need to know if your 'default' user actually has one set.
+    secureJsonData:
+      password: ''
+
+  - name: prometheus
+    type: prometheus
+    uid: efuqul7osv6rkd       # matches native install exactly
+    access: proxy
+    url: http://prometheus:9090   # was 'http://localhost:9090'
+    isDefault: true

@@ -1,0 +1,17 @@
+<!-- clickhouse/users.d/allow-network.xml
+     The official ClickHouse image restricts the 'default' user to
+     localhost-only connections when no password is set (a deliberate
+     security default). That breaks connections from other containers
+     on pipeline-net (e.g. processor), which aren't "local" from
+     ClickHouse's perspective. This override explicitly re-opens
+     network access for 'default', matching this project's existing
+     passwordless setup rather than introducing a real password. -->
+<clickhouse>
+    <users>
+        <default>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+        </default>
+    </users>
+</clickhouse>

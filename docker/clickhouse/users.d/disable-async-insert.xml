@@ -1,0 +1,12 @@
+<!-- clickhouse/users.d/disable-async-insert.xml
+     Mirrors the native override you already have on the VM. Without this,
+     the 'default' user profile has async_insert enabled, and inserts from
+     the Rust `clickhouse` crate silently queue instead of landing
+     immediately — which is what caused bug #1 from your native setup. -->
+<clickhouse>
+    <profiles>
+        <default>
+            <async_insert>0</async_insert>
+        </default>
+    </profiles>
+</clickhouse>
