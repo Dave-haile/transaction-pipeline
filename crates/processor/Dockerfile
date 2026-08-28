@@ -1,10 +1,13 @@
+ARG RUST_BASE_IMAGE=rust:1.97-slim-bookworm
+ARG RUNTIME_BASE_IMAGE=debian:bookworm-slim
+
 # crates/processor/Dockerfile
 # Same structure as crates/ingestion/Dockerfile - see that file's
 # comments for the full reasoning behind each step. Only the crate
 # name changes throughout.
 
 # ---------- Stage 1: builder ----------
-FROM local/rust-1.82-slim-https:latest AS builder
+FROM ${RUST_BASE_IMAGE} AS builder
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -36,7 +39,7 @@ RUN touch crates/processor/src/main.rs crates/common/src/lib.rs && \
     cargo build --release -p processor
 
 # ---------- Stage 2: runtime ----------
-FROM local/debian-bookworm-slim-https:latest
+FROM ${RUNTIME_BASE_IMAGE}
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
